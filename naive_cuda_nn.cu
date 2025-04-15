@@ -11,6 +11,20 @@
 #define EPOCHS 1
 #define NUM_CLASSES 10
 
+
+#define CHECK_CUDA_ERROR(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error in %s at line %d: %s\n", \
+                    __FILE__, __LINE__, cudaGetErrorString(err)); \
+            exit(EXIT_FAILURE); \
+        } \
+    } while(0)
+
+double get_time(clock_t start) {
+    return (double)(clock() - start) / CLOCKS_PER_SEC;
+}
 __device__ float relu(float x) {
     return (x > 0) ? x : 0;
 }
@@ -19,21 +33,33 @@ __device__ float relu_derivative(float x) {
     return (x > 0) ? 1.0f : 0.0f;
 }
 
-__device__ void softmax(float* x, int size) {
-    float max_val = x[0];
-    for (int i = 1; i < size; ++i)
-        if (x[i] > max_val) max_val = x[i];
-
-    float sum = 0.0f;
-    for (int i = 0; i < size; ++i) {
-        x[i] = expf(x[i] - max_val);  
-        sum += x[i];
-    }
-    for (int i = 0; i < size; ++i) {
-        x[i] /= sum;
+__global__ void softmaxKernel(double* A, int rows, int cols) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < rows) {
+        double max_val = A[row * cols];
+        for (int i = 1; i < cols; i++) {
+            if (A[row * cols + i] > max_val) {
+                max_val = A[row * cols + i];
+            }
+        }
+        
+        double sum = 0.0;
+        for (int i = 0; i < cols; i++) {
+            double val = A[row * cols + i] - max_val;
+            if (val > -708.0) { // log(DBL_MIN) is around -708
+                A[row * cols + i] = exp(val);
+            } else {
+                A[row * cols + i] = 0.0;
+            }
+            sum += A[row * cols + i];
+        }
+        
+        const double eps = 1e-15;
+        for (int i = 0; i < cols; i++) {
+            A[row * cols + i] /= (sum + eps);
+        }
     }
 }
-
 __global__ void trainKernel(float* d_images, float* d_labels,
                             float* W1, float* b1, float* W2, float* b2,
                             int numSamples) {
