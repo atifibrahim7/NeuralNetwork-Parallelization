@@ -108,67 +108,108 @@ __global__ void softmaxKernel(double* A, int rows, int cols) {
         }
     }
 }
-__global__ void trainKernel(float* d_images, float* d_labels,
-                            float* W1, float* b1, float* W2, float* b2,
-                            int numSamples) {
 
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= numSamples) return;
 
-    float input[INPUT_SIZE];
-    float hidden[HIDDEN_SIZE];
-    float output[OUTPUT_SIZE];
-    float d_hidden[HIDDEN_SIZE];
-    float d_output[OUTPUT_SIZE];
 
-    for (int i = 0; i < INPUT_SIZE; ++i)
-        input[i] = d_images[idx * INPUT_SIZE + i];
-
-    for (int i = 0; i < HIDDEN_SIZE; ++i) {
-        float sum = b1[i];
-        for (int j = 0; j < INPUT_SIZE; ++j) {
-            sum += W1[i * INPUT_SIZE + j] * input[j];
+void train(NeuralNetwork* net, double** images, double** labels, int numImages) {
+    clock_t total_start = clock();
+    
+    double* images_flat = flattenMatrix(images, numImages, INPUT_SIZE);
+    double* labels_flat = flattenMatrix(labels, numImages, OUTPUT_SIZE);
+    
+    for (int epoch = 0; epoch < EPOCHS; epoch++) {
+        clock_t epoch_start = clock();
+        double loss = 0.0;
+        int correct = 0;
+        
+        for (int batch_start = 0; batch_start < numImages; batch_start += BATCH_SIZE) {
+            int actual_batch_size = (batch_start + BATCH_SIZE <= numImages) ? BATCH_SIZE : (numImages - batch_start);
+            
+            double* batch_hidden = (double*)malloc(actual_batch_size * HIDDEN_SIZE * sizeof(double));
+            double* batch_output = (double*)malloc(actual_batch_size * OUTPUT_SIZE * sizeof(double));
+            
+            forwardBatch(net, images_flat + batch_start * INPUT_SIZE, 
+                         batch_hidden, batch_output, actual_batch_size);
+            
+            backwardBatch(net, images_flat + batch_start * INPUT_SIZE, 
+                          batch_hidden, batch_output, 
+                          labels_flat + batch_start * OUTPUT_SIZE, actual_batch_size);
+            
+            for (int b = 0; b < actual_batch_size; b++) {
+                for (int k = 0; k < OUTPUT_SIZE; k++) {
+                    if (labels_flat[(batch_start + b) * OUTPUT_SIZE + k] > 0) {
+                        loss -= log(batch_output[b * OUTPUT_SIZE + k]);
+                    }
+                }
+                
+                int pred = 0, actual = 0;
+                for (int j = 0; j < OUTPUT_SIZE; j++) {
+                    if (batch_output[b * OUTPUT_SIZE + j] > batch_output[b * OUTPUT_SIZE + pred]) pred = j;
+                    if (labels_flat[(batch_start + b) * OUTPUT_SIZE + j] > labels_flat[(batch_start + b) * OUTPUT_SIZE + actual]) actual = j;
+                }
+                if (pred == actual) correct++;
+            }
+            
+            free(batch_hidden);
+            free(batch_output);
         }
-        hidden[i] = relu(sum);
+        
+        printf("Epoch %d - Loss: %.4f - Train Accuracy: %.2f%% - Time: %.3fs\n",
+               epoch + 1, loss / numImages, (correct / (double)numImages) * 100, get_time(epoch_start));
     }
-
-    for (int i = 0; i < OUTPUT_SIZE; ++i) {
-        float sum = b2[i];
-        for (int j = 0; j < HIDDEN_SIZE; ++j) {
-            sum += W2[i * HIDDEN_SIZE + j] * hidden[j];
-        }
-        output[i] = sum;
-    }
-
-    softmax(output, OUTPUT_SIZE);
-
-    for (int i = 0; i < OUTPUT_SIZE; ++i) {
-        d_output[i] = output[i] - d_labels[idx * OUTPUT_SIZE + i];
-    }
-
-    for (int i = 0; i < HIDDEN_SIZE; ++i) {
-        d_hidden[i] = 0;
-        for (int j = 0; j < OUTPUT_SIZE; ++j) {
-            d_hidden[i] += W2[j * HIDDEN_SIZE + i] * d_output[j];
-        }
-        d_hidden[i] *= relu_derivative(hidden[i]);
-    }
-
-    for (int i = 0; i < OUTPUT_SIZE; ++i) {
-        for (int j = 0; j < HIDDEN_SIZE; ++j) {
-            W2[i * HIDDEN_SIZE + j] -= LEARNING_RATE * d_output[i] * hidden[j];
-        }
-        b2[i] -= LEARNING_RATE * d_output[i];
-    }
-
-    for (int i = 0; i < HIDDEN_SIZE; ++i) {
-        for (int j = 0; j < INPUT_SIZE; ++j) {
-            W1[i * INPUT_SIZE + j] -= LEARNING_RATE * d_hidden[i] * input[j];
-        }
-        b1[i] -= LEARNING_RATE * d_hidden[i];
-    }
+    
+    double* W1_flat = (double*)malloc(HIDDEN_SIZE * INPUT_SIZE * sizeof(double));
+    double* W2_flat = (double*)malloc(OUTPUT_SIZE * HIDDEN_SIZE * sizeof(double));
+    
+    CHECK_CUDA_ERROR(cudaMemcpy(W1_flat, net->W1_device, HIDDEN_SIZE * INPUT_SIZE * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(W2_flat, net->W2_device, OUTPUT_SIZE * HIDDEN_SIZE * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(net->b1_host, net->b1_device, HIDDEN_SIZE * sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(net->b2_host, net->b2_device, OUTPUT_SIZE * sizeof(double), cudaMemcpyDeviceToHost));
+    
+    unflattenMatrix(W1_flat, net->W1_host, HIDDEN_SIZE, INPUT_SIZE);
+    unflattenMatrix(W2_flat, net->W2_host, OUTPUT_SIZE, HIDDEN_SIZE);
+    
+    free(images_flat);
+    free(labels_flat);
+    free(W1_flat);
+    free(W2_flat);
+    
+    printf("Total training time: %.3fs\n", get_time(total_start));
 }
 
+void evaluate(NeuralNetwork* net, double** images, double** labels, int numImages) {
+    double* images_flat = flattenMatrix(images, numImages, INPUT_SIZE);
+    double* labels_flat = flattenMatrix(labels, numImages, OUTPUT_SIZE);
+    
+    int correct = 0;
+    
+    for (int batch_start = 0; batch_start < numImages; batch_start += BATCH_SIZE) {
+        int actual_batch_size = (batch_start + BATCH_SIZE <= numImages) ? BATCH_SIZE : (numImages - batch_start);
+        
+        double* batch_hidden = (double*)malloc(actual_batch_size * HIDDEN_SIZE * sizeof(double));
+        double* batch_output = (double*)malloc(actual_batch_size * OUTPUT_SIZE * sizeof(double));
+        
+        forwardBatch(net, images_flat + batch_start * INPUT_SIZE, 
+                     batch_hidden, batch_output, actual_batch_size);
+        
+        for (int b = 0; b < actual_batch_size; b++) {
+            int pred = 0, actual = 0;
+            for (int j = 0; j < OUTPUT_SIZE; j++) {
+                if (batch_output[b * OUTPUT_SIZE + j] > batch_output[b * OUTPUT_SIZE + pred]) pred = j;
+                if (labels_flat[(batch_start + b) * OUTPUT_SIZE + j] > labels_flat[(batch_start + b) * OUTPUT_SIZE + actual]) actual = j;
+            }
+            if (pred == actual) correct++;
+        }
+        
+        free(batch_hidden);
+        free(batch_output);
+    }
+    
+    printf("Test Accuracy: %.2f%%\n", (correct / (double)numImages) * 100);
+    
+    free(images_flat);
+    free(labels_flat);
+}
 
 
 
