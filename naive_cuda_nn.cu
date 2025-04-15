@@ -46,7 +46,41 @@ __device__ float relu(float x) {
 __device__ float relu_derivative(float x) {
     return (x > 0) ? 1.0f : 0.0f;
 }
+NeuralNetwork* createNetwork() {
+    NeuralNetwork* net = (NeuralNetwork*)malloc(sizeof(NeuralNetwork));
+    
+    net->W1_host = allocateMatrix(HIDDEN_SIZE, INPUT_SIZE);
+    net->W2_host = allocateMatrix(OUTPUT_SIZE, HIDDEN_SIZE);
+    net->b1_host = (double*)calloc(HIDDEN_SIZE, sizeof(double));
+    net->b2_host = (double*)calloc(OUTPUT_SIZE, sizeof(double));
 
+    srand(time(NULL));
+    for (int i = 0; i < HIDDEN_SIZE; i++)
+        for (int j = 0; j < INPUT_SIZE; j++)
+            net->W1_host[i][j] = ((double)rand() / RAND_MAX) * 0.01;
+
+    for (int i = 0; i < OUTPUT_SIZE; i++)
+        for (int j = 0; j < HIDDEN_SIZE; j++)
+            net->W2_host[i][j] = ((double)rand() / RAND_MAX) * 0.01;
+    
+    double* W1_flat = flattenMatrix(net->W1_host, HIDDEN_SIZE, INPUT_SIZE);
+    double* W2_flat = flattenMatrix(net->W2_host, OUTPUT_SIZE, HIDDEN_SIZE);
+    
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&net->W1_device, HIDDEN_SIZE * INPUT_SIZE * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&net->W2_device, OUTPUT_SIZE * HIDDEN_SIZE * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&net->b1_device, HIDDEN_SIZE * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&net->b2_device, OUTPUT_SIZE * sizeof(double)));
+    
+    CHECK_CUDA_ERROR(cudaMemcpy(net->W1_device, W1_flat, HIDDEN_SIZE * INPUT_SIZE * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(net->W2_device, W2_flat, OUTPUT_SIZE * HIDDEN_SIZE * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(net->b1_device, net->b1_host, HIDDEN_SIZE * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(net->b2_device, net->b2_host, OUTPUT_SIZE * sizeof(double), cudaMemcpyHostToDevice));
+    
+    free(W1_flat);
+    free(W2_flat);
+    
+    return net;
+}
 __global__ void softmaxKernel(double* A, int rows, int cols) {
     int row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row < rows) {
@@ -135,47 +169,54 @@ __global__ void trainKernel(float* d_images, float* d_labels,
     }
 }
 
-float* loadFileToArray(const char* filename, int numItems, int itemSize, int offset) {
+
+
+
+// Read MNIST dataset
+double** loadMNISTImages(const char* filename, int numImages) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
-        printf("Cannot open %s\n", filename);
+        printf("Error opening %s\n", filename);
         exit(1);
     }
-    fseek(file, offset, SEEK_SET);
-    float* data = (float*)malloc(sizeof(float) * numItems * itemSize);
-    for (int i = 0; i < numItems * itemSize; ++i) {
-        unsigned char byte;
-        fread(&byte, sizeof(unsigned char), 1, file);
-        data[i] = byte / 255.0f;
+    fseek(file, 16, SEEK_SET);
+    double** images = allocateMatrix(numImages, INPUT_SIZE);
+    for (int i = 0; i < numImages; i++) {
+        for (int j = 0; j < INPUT_SIZE; j++) {
+            unsigned char pixel;
+            if (fread(&pixel, sizeof(unsigned char), 1, file) != 1) {
+                fprintf(stderr, "Error: Failed to read pixel\n");
+                fclose(file);
+                exit(EXIT_FAILURE);
+            }
+            images[i][j] = pixel / 255.0;
+        }
     }
     fclose(file);
-    return data;
+    return images;
 }
 
-float* loadLabelsToOneHot(const char* filename, int numItems) {
+double** loadMNISTLabels(const char* filename, int numLabels) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
-        printf("Cannot open %s\n", filename);
+        printf("Error opening %s\n", filename);
         exit(1);
     }
     fseek(file, 8, SEEK_SET);
-    float* labels = (float*)calloc(numItems * OUTPUT_SIZE, sizeof(float));
-    for (int i = 0; i < numItems; ++i) {
+    double** labels = allocateMatrix(numLabels, OUTPUT_SIZE);
+    for (int i = 0; i < numLabels; i++) {
         unsigned char label;
-        fread(&label, sizeof(unsigned char), 1, file);
-        labels[i * OUTPUT_SIZE + label] = 1.0f;
+        if (fread(&label, sizeof(unsigned char), 1, file) != 1) {
+            fprintf(stderr, "Error: Failed to read label\n");
+            fclose(file);
+            exit(EXIT_FAILURE);
+        }
+        for (int j = 0; j < OUTPUT_SIZE; j++) {
+            labels[i][j] = (j == label) ? 1.0 : 0.0;
+        }
     }
     fclose(file);
     return labels;
-}
-double* flattenMatrix(double** matrix, int rows, int cols) {
-    double* flat = (double*)malloc(rows * cols * sizeof(double));
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
-            flat[i * cols + j] = matrix[i][j];
-        }
-    }
-    return flat;
 }
 
 // Convert flattened 1D array to 2D matrix
@@ -186,52 +227,85 @@ void unflattenMatrix(double* flat, double** matrix, int rows, int cols) {
         }
     }
 }
-int main() {
-    int train_size = 10000;  // Keep small for demo
+void freeNetwork(NeuralNetwork* net) {
+    freeMatrix(net->W1_host, HIDDEN_SIZE);
+    freeMatrix(net->W2_host, OUTPUT_SIZE);
+    free(net->b1_host);
+    free(net->b2_host);
+    
+    cudaFree(net->W1_device);
+    cudaFree(net->W2_device);
+    cudaFree(net->b1_device);
+    cudaFree(net->b2_device);
+    
+    free(net);
+}
 
-    printf("Loading MNIST data...\n");
-    float* h_train_images = loadFileToArray("data/train-images.idx3-ubyte", train_size, INPUT_SIZE, 16);
-    float* h_train_labels = loadLabelsToOneHot("data/train-labels.idx1-ubyte", train_size);
-
-    // Allocate GPU memory
-    float *d_images, *d_labels;
-    cudaMalloc(&d_images, train_size * INPUT_SIZE * sizeof(float));
-    cudaMalloc(&d_labels, train_size * OUTPUT_SIZE * sizeof(float));
-    cudaMemcpy(d_images, h_train_images, train_size * INPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_labels, h_train_labels, train_size * OUTPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice);
-
-    // Allocate network
-    float *W1, *b1, *W2, *b2;
-    cudaMallocManaged(&W1, INPUT_SIZE * HIDDEN_SIZE * sizeof(float));
-    cudaMallocManaged(&b1, HIDDEN_SIZE * sizeof(float));
-    cudaMallocManaged(&W2, HIDDEN_SIZE * OUTPUT_SIZE * sizeof(float));
-    cudaMallocManaged(&b2, OUTPUT_SIZE * sizeof(float));
-
-    srand(time(NULL));
-    for (int i = 0; i < INPUT_SIZE * HIDDEN_SIZE; i++) W1[i] = ((float)rand() / RAND_MAX) * 0.01f;
-    for (int i = 0; i < HIDDEN_SIZE * OUTPUT_SIZE; i++) W2[i] = ((float)rand() / RAND_MAX) * 0.01f;
-    for (int i = 0; i < HIDDEN_SIZE; i++) b1[i] = 0.0f;
-    for (int i = 0; i < OUTPUT_SIZE; i++) b2[i] = 0.0f;
-
-    // Train
-    printf("Training...\n");
-    int threads = 256;
-    int blocks = (train_size + threads - 1) / threads;
-    for (int epoch = 0; epoch < EPOCHS; epoch++) {
-        trainKernel<<<blocks, threads>>>(d_images, d_labels, W1, b1, W2, b2, train_size);
-        cudaDeviceSynchronize();
-        printf("Epoch %d complete\n", epoch + 1);
+void evaluate(NeuralNetwork* net, double** images, double** labels, int numImages) {
+    double* images_flat = flattenMatrix(images, numImages, INPUT_SIZE);
+    double* labels_flat = flattenMatrix(labels, numImages, OUTPUT_SIZE);
+    
+    int correct = 0;
+    
+    for (int batch_start = 0; batch_start < numImages; batch_start += BATCH_SIZE) {
+        int actual_batch_size = (batch_start + BATCH_SIZE <= numImages) ? BATCH_SIZE : (numImages - batch_start);
+        
+        double* batch_hidden = (double*)malloc(actual_batch_size * HIDDEN_SIZE * sizeof(double));
+        double* batch_output = (double*)malloc(actual_batch_size * OUTPUT_SIZE * sizeof(double));
+        
+        forwardBatch(net, images_flat + batch_start * INPUT_SIZE, 
+                     batch_hidden, batch_output, actual_batch_size);
+        
+        for (int b = 0; b < actual_batch_size; b++) {
+            int pred = 0, actual = 0;
+            for (int j = 0; j < OUTPUT_SIZE; j++) {
+                if (batch_output[b * OUTPUT_SIZE + j] > batch_output[b * OUTPUT_SIZE + pred]) pred = j;
+                if (labels_flat[(batch_start + b) * OUTPUT_SIZE + j] > labels_flat[(batch_start + b) * OUTPUT_SIZE + actual]) actual = j;
+            }
+            if (pred == actual) correct++;
+        }
+        
+        free(batch_hidden);
+        free(batch_output);
     }
+    
+    printf("Test Accuracy: %.2f%%\n", (correct / (double)numImages) * 100);
+    
+    free(images_flat);
+    free(labels_flat);
+}
+// Main function
+int main() {
+    printf("MNIST Neural Network with CUDA\n\n");
+    
+    // Check for CUDA device
+    int deviceCount;
+    cudaGetDeviceCount(&deviceCount);
+    if (deviceCount == 0) {
+        fprintf(stderr, "Error: No CUDA-capable device found\n");
+        return 1;
+    }
+    
+    cudaDeviceProp deviceProp;
+    cudaGetDeviceProperties(&deviceProp, 0);
+    printf("Using GPU: %s\n", deviceProp.name);
+    
+    double** train_images = loadMNISTImages("data/train-images.idx3-ubyte", 60000);
+    double** train_labels = loadMNISTLabels("data/train-labels.idx1-ubyte", 60000);
+    double** test_images = loadMNISTImages("data/t10k-images.idx3-ubyte", 10000);
+    double** test_labels = loadMNISTLabels("data/t10k-labels.idx1-ubyte", 10000);
+    
+    NeuralNetwork* net = createNetwork();
+    train(net, train_images, train_labels, 60000);
+    evaluate(net, test_images, test_labels, 10000);
+    
+    freeNetwork(net);
+    freeMatrix(train_images, 60000);
+    freeMatrix(train_labels, 60000);
+    freeMatrix(test_images, 10000);
+    freeMatrix(test_labels, 10000);
 
-    // Cleanup
-    cudaFree(d_images);
-    cudaFree(d_labels);
-    cudaFree(W1);
-    cudaFree(b1);
-    cudaFree(W2);
-    cudaFree(b2);
-    free(h_train_images);
-    free(h_train_labels);
-
+    cudaDeviceReset();
+    
     return 0;
 }
