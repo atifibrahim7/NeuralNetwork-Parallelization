@@ -10,6 +10,20 @@
 #define LEARNING_RATE 0.01f
 #define EPOCHS 1
 #define NUM_CLASSES 10
+// Neural network structure
+typedef struct {
+    // Host memory
+    double** W1_host;
+    double** W2_host;
+    double* b1_host;
+    double* b2_host;
+    
+    // Device memory (flat arrays for GPU)
+    double* W1_device;
+    double* W2_device;
+    double* b1_device;
+    double* b2_device;
+} NeuralNetwork;
 
 
 #define CHECK_CUDA_ERROR(call) \
@@ -154,7 +168,24 @@ float* loadLabelsToOneHot(const char* filename, int numItems) {
     fclose(file);
     return labels;
 }
+double* flattenMatrix(double** matrix, int rows, int cols) {
+    double* flat = (double*)malloc(rows * cols * sizeof(double));
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            flat[i * cols + j] = matrix[i][j];
+        }
+    }
+    return flat;
+}
 
+// Convert flattened 1D array to 2D matrix
+void unflattenMatrix(double* flat, double** matrix, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            matrix[i][j] = flat[i * cols + j];
+        }
+    }
+}
 int main() {
     int train_size = 10000;  // Keep small for demo
 
