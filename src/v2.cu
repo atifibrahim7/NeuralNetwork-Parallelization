@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 
 #define INPUT_SIZE 784
-#define HIDDEN_SIZE 128
+#define HIDDEN_SIZE 100
 #define OUTPUT_SIZE 10
 #define LEARNING_RATE 0.01
 #define EPOCHS 3
