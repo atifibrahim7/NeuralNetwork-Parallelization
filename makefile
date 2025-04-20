@@ -1,20 +1,17 @@
-CC = gcc
-CFLAGS = -Wall -O2 -pg  # Added -pg for profiling
+# Makefile
 
-EXE = nn.exe
-SRC = nn.c
+NVCC = nvcc
+ARCH = -arch=sm_75
 
-all: $(EXE) run profile
+# Targets
+all: v2 v3
 
-$(EXE): $(SRC)
-	$(CC) $(CFLAGS) -o $(EXE) $(SRC) -lm
+v2:
+	$(NVCC) $(ARCH) v2.cu -o cuda_v2
 
-run: $(EXE)
-	./$(EXE)
-
-profile: $(EXE)
-	gprof $(EXE) gmon.out > profile.txt
-	cat profile.txt  # Display profiling results
+v3:
+	$(NVCC) $(ARCH) v3.cu -o cuda_v3
 
 clean:
-	rm -f $(EXE) gmon.out profile.txt  # Remove profiling files
+	rm -f cuda_v2 cuda_v3
+	@echo "Cleaned up generated files."
