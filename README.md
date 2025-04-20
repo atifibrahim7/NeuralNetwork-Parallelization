@@ -1,47 +1,115 @@
-# CUDA-Accelerated MNIST Classifier
+# Neural Network Acceleration on GPUs - MNIST Classification
 
-This project implements a neural network for MNIST digit classification with four versions:
+This project demonstrates the acceleration of neural network training for MNIST digit classification using GPU-based computation. The implementation progresses from a baseline CPU version to increasingly optimized GPU versions using CUDA and Tensor Cores.
 
-- **V1:** Serial CPU implementation  
-- **V2:** Naive GPU implementation using CUDA  
-- **V3:** Optimized GPU implementation (shared memory, tiling, kernel fusion, streams)  
-- **V4:** Tensor Core accelerated implementation  
+## Project Overview
 
----
+The project implements a fully connected neural network for classifying images from the MNIST dataset, with a focus on leveraging GPU acceleration to improve training speed and performance. We explore various GPU optimization techniques and their impact on training time and accuracy.
 
-## 🔧 How to Build and Run
+### Neural Network Architecture
+- **Input Layer**: 28x28 grayscale MNIST images flattened into a 784-dimensional vector
+- **Hidden Layer**: 100 neurons with ReLU activation
+- **Output Layer**: 10 neurons with Softmax activation for digit classification (0-9)
 
-1. **Navigate to the source directory:**
+## Implementation Versions
 
-   ```bash
-   cd src
-Build the project using the Makefile:
+### V1: Sequential CPU Implementation (Baseline)
+- Pure CPU-based implementation with sequential processing
+- Manual matrix multiplication using nested loops
+- No parallelization or hardware acceleration
 
-Terminal Command:
-make
+### V2: Naive CUDA Implementation
+- Basic GPU offloading using CUDA
+- Parallelized core operations with CUDA kernels
+- Explicit memory management between host and device
+- Maintains accuracy but faces performance bottlenecks due to data transfer overhead
 
-This will generate the following binaries:
+### V3: Optimized CUDA Implementation
+- Advanced memory management with pinned memory
+- Tiled matrix multiplication using shared memory
+- Kernel fusion to reduce launch overhead
+- CUDA streams for overlapping data transfer and computation
+- Optimized batch processing using grid-z
+- Achieves ~16x speedup over the baseline implementation
 
-v1 → V1 (serial CPU)
+### V4: Tensor Core Implementation
+- Utilizes specialized Tensor Core hardware for matrix operations
+- Implements FP16 (half-precision) computation
+- Leverages cuBLAS with Tensor Core support
+- Provides further performance improvements with slight accuracy trade-offs
 
-cuda_v2 → V2 (naive CUDA)
+## Requirements
 
-cuda_v3 → V3 (optimized CUDA)
+- CUDA-capable GPU with compute capability 7.5 or higher
+- CUDA Toolkit (compatible with your GPU)
+- GCC Compiler
+- Make utility
 
-cuda_v4 → V4 (tensor core CUDA)
+## Compilation Instructions
 
-Run any version as needed:
+The project includes a Makefile for easy compilation of all versions:
 
-bash
-Copy
-Edit
-./v1            # Serial CPU version
-./cuda_v2       # Naive CUDA version
-./cuda_v3       # Optimized CUDA version
-./cuda_v4       # Tensor Core version
+```bash
+# Compile all versions
+make all
 
-Dataset Information
-The MNIST dataset used in this project is not included in the repository due to its size.
+# Compile specific versions
+make v1  # Sequential CPU version
+make v2  # Naive CUDA implementation
+make v3  # Optimized CUDA implementation
+make v4  # Tensor Core implementation
 
-Please refer to info.txt in the root directory for instructions on how to download and place the dataset files.
+# Clean up compiled files
+make clean
+```
 
+## Execution
+
+After compiling, run each version with:
+
+```bash
+# Run the sequential CPU version
+./v1
+
+# Run the naive CUDA implementation
+./cuda_v2
+
+# Run the optimized CUDA implementation
+./cuda_v3
+
+# Run the Tensor Core implementation
+./cuda_v4
+```
+
+## Key Optimizations
+
+1. **Memory Management**:
+   - Pinned memory for faster host-device transfers
+   - Shared memory tiling for reduced global memory access
+   - Persistent memory allocation across epochs
+
+2. **Computation Optimizations**:
+   - Tiled matrix multiplication
+   - Kernel fusion for related operations
+   - Loop unrolling for improved instruction-level parallelism
+
+3. **Parallelism Enhancements**:
+   - CUDA streams for overlapping operations
+   - Grid-z based batch processing
+   - Optimized thread block dimensions
+
+4. **Precision Adjustments**:
+   - FP16 computation with Tensor Cores in V4
+
+## Project Team
+- Atif Ibrahim (I221249)
+- Muhammad Ali (I220827)
+- Hussain Ali Zaidi (I220902)
+
+## Performance Results
+
+The project achieves significant speedups through progressive optimization:
+- V1 to V3: ~16x speedup through CUDA optimizations
+- Further improvements in V4 with Tensor Cores
+
+Note: While optimizations dramatically improve speed, there may be minor impacts on accuracy, particularly in the first epoch and when using reduced precision (FP16) in the Tensor Core implementation.
